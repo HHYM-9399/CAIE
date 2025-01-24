@@ -10,6 +10,7 @@ import plotly.graph_objs as go
 import plotly.offline as py
 import re
 from matplotlib.patches import Patch
+from sklearn.ensemble import RandomForestRegressor
 
 
 
@@ -18,8 +19,15 @@ def OrderReview_Clean(df):
     df.drop_duplicates(subset='order_id', keep='last', inplace=True)
     
 def Order_Clean(df):
-    df.drop(columns=['order_approved_at','order_delivered_carrier_date','order_delivered_customer_date'], inplace = True)
+    df.drop(columns=['order_approved_at', 'order_delivered_carrier_date'], inplace = True)
     df.loc[df['order_status'] != 'delivered', 'order_status'] = 'not_delivered'
+    date_columns = [
+    'order_purchase_timestamp',
+    'order_delivered_customer_date',
+    'order_estimated_delivery_date']
+    for col in date_columns:
+        df[col] = pd.to_datetime(df[col], errors='coerce')
+    return df
 
 def Product_Clean(df, df_c):
     df.fillna({'product_category_name': 'unknown'}, inplace=True)
@@ -31,7 +39,6 @@ def Product_Clean(df, df_c):
 
 def Product_Bin(df):
     df['product_category_name_english'] = df['product_category_name_english'].str.replace(' ', '_')
-    # Define broader mapping categories
     broader_mapping = {
         'home_furnishing': [
             'bed_bath_table', 'furniture_decor', 'housewares', 'home_appliances',
@@ -98,14 +105,11 @@ def OrderPayment_Clean(df):
     df_new.loc[df['payment_type'] != 'voucher', 'vouchers_used'] = 0
     return df_new
 
-def IQR(OrderPayment):
-    Q1 = OrderPayment['total_value'].quantile(0.25)
-    Q3 = OrderPayment['total_value'].quantile(0.75)
-    IQR = Q3 - Q1
-    lower_bound = Q1 - 1.5 * IQR
-    upper_bound = Q3 + 1.5 * IQR
-    OrderPayment = OrderPayment[(OrderPayment['total_value'] >= lower_bound) & (OrderPayment['total_value'] <= upper_bound)]
+def cap_outliers(OrderPayment, cap_percentile=0.95):
+    upper_cap = OrderPayment['total_value'].quantile(cap_percentile)
+    OrderPayment['total_value'] = OrderPayment['total_value'].apply(lambda x: min(x, upper_cap))
     return OrderPayment
+
 
 def Merge_all(Orders, OrderItem, Products, OrderPayment, OrderReview, CustomerDataset, Sellers):
     df_total = pd.merge(Orders, OrderItem, on='order_id', how='left')
@@ -133,10 +137,12 @@ def Merging_Clean1(df_total):
 def Merging_Clean2(df_total):
     df_total.dropna(inplace=True)
 
-def DDate(df_total):
-    df_total["order_purchase_timestamp"] = pd.to_datetime(df_total["order_purchase_timestamp"])
-    df_total["order_estimated_delivery_date"] = pd.to_datetime(df_total["order_estimated_delivery_date"])
-    df_total["estimated_delivery_time"] = (df_total["order_estimated_delivery_date"] - df_total["order_purchase_timestamp"]).dt.days
+def DDate(df):
+    df["estimated_delivery_time"] = (df["order_estimated_delivery_date"] - df["order_purchase_timestamp"]).dt.days
+    df["actual_delivery_time"] = (df["order_delivered_customer_date"] - df["order_purchase_timestamp"]).dt.days
+    df.drop(columns=['order_delivered_customer_date'], inplace=True)
+    df.fillna(-1, inplace=True)
+
 
 def RepeatBuyer(df_total):
     repeat_buyer = df_total.groupby('customer_unique_id').agg(
